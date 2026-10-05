@@ -9,7 +9,7 @@ Choose either transcription mode while captions are running:
 | Apple `SpeechAnalyzer` + `SpeechTranscriber`, on device | `gpt-realtime-translate` | US$2.04/hour |
 | OpenAI `gpt-live-transcribe` | `gpt-realtime-translate` | US$3.06/hour |
 
-Both models receive audio in parallel. Translation never waits for the original transcript. Switching transcription keeps the translation connection open. The Apple mode uses the public Speech API, not text scraped from the system Live Captions window.
+Both models receive audio in parallel. Translation never waits for the original transcript. Switching transcription keeps the translation connection open. The Apple mode uses the public Speech API.
 
 ## Requirements
 
@@ -95,3 +95,8 @@ Compilation and UI preview do not establish live API access, recognition quality
 - [OpenAI realtime translation](https://developers.openai.com/api/docs/guides/realtime-translation)
 - [Translation client events](https://developers.openai.com/api/reference/resources/realtime/translation-client-events)
 - [API pricing](https://developers.openai.com/api/docs/pricing)
+
+
+## Generative AI usage
+
+This project was developed with assistance from generative AI tools. Not all code has been reviewed by a human. Use at your own risk.
