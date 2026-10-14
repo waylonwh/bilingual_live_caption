@@ -31,6 +31,8 @@ private final class MemoryCredentials: CredentialStore {
     let preferences = UserPreferences(defaults: defaults)
     let credentials = MemoryCredentials()
     let first = CaptionModel(preferences: preferences, credentials: credentials, environment: [:])
+    #expect(first.recordCaptions)
+    first.recordCaptions = false
     first.mode = .openAI
     first.sourceLanguage = "en-AU"
     first.targetLanguage = "ja"
@@ -42,7 +44,7 @@ private final class MemoryCredentials: CredentialStore {
     first.backgroundColor = .blue
     first.originalColor = .yellow
     first.translationColor = .green
-    first.isOverlayVisible = true
+    first.beginCaptionDisplay()
     first.original = "Private caption"
     first.apiKey = "test-secret"
     await first.quit()
@@ -50,11 +52,12 @@ private final class MemoryCredentials: CredentialStore {
     let saved = try #require(try preferences.load())
     let restored = CaptionModel(preferences: preferences, credentials: credentials, environment: [:])
     #expect(restored.mode == .openAI)
+    #expect(!restored.recordCaptions)
     #expect(restored.sourceLanguage == "en-AU" && restored.targetLanguage == "ja")
     #expect(restored.selectedApp == "com.apple.Safari")
     #expect(restored.keywords == "sea ice")
     #expect(restored.fontSize == 18 && restored.translationFontSize == 32)
-    #expect(restored.opacity == 0.4 && restored.isOverlayVisible)
+    #expect(restored.opacity == 0.4 && !restored.isOverlayVisible)
     for (actual, expected) in [(SavedColor(restored.backgroundColor), saved.backgroundColor),
                                (SavedColor(restored.originalColor), saved.originalColor),
                                (SavedColor(restored.translationColor), saved.translationColor)] {
@@ -69,6 +72,13 @@ private final class MemoryCredentials: CredentialStore {
     let json = String(decoding: bytes, as: UTF8.self)
     #expect(!json.contains("test-secret") && !json.contains("Private caption"))
     #expect(credentials.writes == ["test-secret"])
+    var legacy = try #require(try JSONSerialization.jsonObject(with: bytes) as? [String: Any])
+    legacy["isOverlayVisible"] = true
+    legacy.removeValue(forKey: "recordCaptions")
+    defaults.set(try JSONSerialization.data(withJSONObject: legacy), forKey: UserPreferences.settingsKey)
+    let legacyRestored = CaptionModel(preferences: preferences, environment: [:])
+    #expect(!legacyRestored.isOverlayVisible && legacyRestored.fontSize == 18)
+    #expect(legacyRestored.recordCaptions)
 }
 
 @MainActor

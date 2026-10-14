@@ -29,7 +29,7 @@ struct SavedSettings: Codable, Equatable {
     var originalColor: SavedColor
     var translationColor: SavedColor
     var opacity: Double
-    var isOverlayVisible: Bool
+    var recordCaptions: Bool? = nil
 }
 
 protocol PreferencesStore {

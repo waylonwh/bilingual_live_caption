@@ -58,8 +58,18 @@ final class CaptionModel: ObservableObject {
     @Published var originalColor = Color.white { didSet { savePreferences() } }
     @Published var translationColor = Color.white { didSet { savePreferences() } }
     @Published var opacity = 0.7 { didSet { savePreferences() } }
-    @Published var isOverlayVisible = false { didSet { savePreferences() } }
+    @Published private(set) var isOverlayVisible = false
     @Published var preferencesError: String?
+    @Published var recordCaptions = true { didSet { savePreferences() } }
+    @Published private(set) var recordingError: String?
+    @Published private(set) var recordingURL: URL?
+    private var recording: CaptionRecording?
+    private var recordingFile: CaptionRecordingFile?
+    private var recordingTask: Task<Void, Never>?
+    static var recordingDirectory: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Bilingual Live Caption", isDirectory: true)
+    }
     @Published var keychainStatus = "API key stays in memory."
     @Published var level = 0.0
     @Published var elapsed = 0.0
@@ -69,10 +79,10 @@ final class CaptionModel: ObservableObject {
     var showOverlay: (() -> Void)?
     var hideOverlay: (() -> Void)?
     private var capture: AudioCapture?
-    private var translator: RealtimeClient?
-    private var cloudTranscriber: RealtimeClient?
+    private var translator: RealtimeStream?
+    private var cloudTranscriber: RealtimeStream?
     private var appleTranscriber: AppleTranscriber?
-    private var pendingCloud: RealtimeClient?
+    private var pendingCloud: RealtimeStream?
     private var pendingApple: AppleTranscriber?
     private var audioTask: Task<Void, Never>?
     private var operation: Task<Void, Never>?
@@ -80,6 +90,8 @@ final class CaptionModel: ObservableObject {
     private var runID = UUID()
     private var transcriptionID = UUID()
     private var store = TranscriptStore()
+    private var originalForDisplay: String?
+    private var translationForDisplay: String?
     private let originalFormatter = SentenceFormatter()
     private let translationFormatter = SentenceFormatter()
     private var activeKey = ""
@@ -89,11 +101,15 @@ final class CaptionModel: ObservableObject {
     private var readyToSave = false
     private var lastSavedKey = ""
     private var keySaveTask: Task<Void, Never>?
+    private var captionDismissTask: Task<Void, Never>?
+    private let captionDismissDelay: Duration
 
     init(preferences: PreferencesStore? = nil, credentials: CredentialStore? = nil,
-         environment: [String: String] = ProcessInfo.processInfo.environment) {
+         environment: [String: String] = ProcessInfo.processInfo.environment,
+         captionDismissDelay: Duration = .seconds(10)) {
         self.preferences = preferences
         self.credentials = credentials
+        self.captionDismissDelay = captionDismissDelay
         do {
             if let saved = try preferences?.load() {
                 mode = TranscriptionMode(rawValue: saved.mode) ?? .apple
@@ -107,7 +123,7 @@ final class CaptionModel: ObservableObject {
                 originalColor = saved.originalColor.color
                 translationColor = saved.translationColor.color
                 opacity = min(1, max(0, saved.opacity))
-                isOverlayVisible = saved.isOverlayVisible
+                recordCaptions = saved.recordCaptions ?? true
             }
         } catch { preferencesError = "Saved settings could not be loaded. \(error.localizedDescription)" }
         do {
@@ -131,7 +147,7 @@ final class CaptionModel: ObservableObject {
                 targetLanguage: targetLanguage, keywords: keywords, selectedApp: selectedApp,
                 fontSize: fontSize, translationFontSize: translationFontSize,
                 backgroundColor: SavedColor(backgroundColor), originalColor: SavedColor(originalColor),
-                translationColor: SavedColor(translationColor), opacity: opacity, isOverlayVisible: isOverlayVisible))
+                translationColor: SavedColor(translationColor), opacity: opacity, recordCaptions: recordCaptions))
             preferencesError = nil
         } catch { preferencesError = "Settings could not be saved. \(error.localizedDescription)" }
     }
@@ -221,6 +237,7 @@ final class CaptionModel: ObservableObject {
             return
         }
         endPreview()
+        captionDismissTask?.cancel()
         clearCaptions()
         error = nil
         isBusy = true
@@ -243,16 +260,24 @@ final class CaptionModel: ObservableObject {
                 }
                 try Task.checkCancellation()
                 status = "Connecting translation…"
-                let translator = RealtimeClient(kind: .translation)
+                let translator = RealtimeStream(kind: .translation)
                 self.translator = translator
                 translator.onEvent = { [weak self] event in
                     guard let self, self.runID == id else { return }
                     if event["type"] as? String == "session.output_transcript.delta", let delta = event["delta"] as? String {
+                        self.recording?.translated(delta, time: event["recording_time"] as? Double ?? self.elapsed,
+                            boundary: event["caption_break"] as? Bool == true)
+                        let separator = event["caption_break"] as? Bool == true ? "\n" : ""
+                        self.translationForDisplay = String(((self.translationForDisplay ?? self.translation) + separator + delta).suffix(6500))
                         self.translation = String((self.translation + delta).suffix(6000))
                         self.lastTranslation = Date()
                     }
                 }
                 translator.onFailure = { [weak self] in self?.handleFailure($0, run: id) }
+                translator.onStatus = { [weak self] message in
+                    guard let self, self.runID == id, self.isRunning else { return }
+                    self.status = message
+                }
                 try await translator.start(key: key, language: targetLanguage)
                 status = "Preparing transcription…"
                 try await prepareTranscriber(mode, run: id)
@@ -262,7 +287,8 @@ final class CaptionModel: ObservableObject {
                 isRunning = true
                 isBusy = false
                 status = "Listening"
-                showOverlay?()
+                beginRecording()
+                beginCaptionDisplay()
                 audioTask = Task {
                     for await frame in frames {
                         guard self.runID == id, self.isRunning else { return }
@@ -313,9 +339,10 @@ final class CaptionModel: ObservableObject {
             if requested == .apple {
                 let local = AppleTranscriber()
                 pendingApple = local
-                local.onText = { [weak self] item, text, final in
+                local.onText = { [weak self] item, text, final, display, start, end in
                     guard let self, self.runID == id, self.transcriptionID == token else { return }
-                    self.store.replace(id: "\(token)-\(item)", text: text, final: final)
+                    self.store.replace(id: "\(token)-\(item)", text: text, final: final, displayText: display)
+                    self.recording?.source(id: "\(token)-\(item)", text: text, start: start, end: end, final: final)
                     self.updateOriginal()
                 }
                 local.onFailure = { [weak self] message in
@@ -324,7 +351,7 @@ final class CaptionModel: ObservableObject {
                 }
                 try await local.start(language: sourceLanguage, keywords: parsedKeywords)
             } else {
-                let cloud = RealtimeClient(kind: .transcription)
+                let cloud = RealtimeStream(kind: .transcription)
                 pendingCloud = cloud
                 cloud.onEvent = { [weak self] event in
                     guard let self, self.runID == id, self.transcriptionID == token,
@@ -334,10 +361,17 @@ final class CaptionModel: ObservableObject {
                     case "input_audio_buffer.committed":
                         let previous = (event["previous_item_id"] as? String).map { "\(token)-\($0)" }
                         self.store.register(itemID, after: previous)
+                        if event["caption_break"] as? Bool == true { self.store.breakBefore(itemID) }
                     case "conversation.item.input_audio_transcription.delta":
                         self.store.delta(id: itemID, text: event["delta"] as? String ?? "")
+                        self.recording?.source(id: itemID, text: event["delta"] as? String ?? "",
+                            start: event["recording_start"] as? Double ?? self.elapsed,
+                            end: event["recording_end"] as? Double ?? self.elapsed, append: true)
                     case "conversation.item.input_audio_transcription.completed":
                         self.store.replace(id: itemID, text: event["transcript"] as? String ?? "", final: true)
+                        self.recording?.source(id: itemID, text: event["transcript"] as? String ?? "",
+                            start: event["recording_start"] as? Double ?? self.elapsed,
+                            end: event["recording_end"] as? Double ?? self.elapsed, final: true)
                     default: return
                     }
                     self.updateOriginal()
@@ -345,6 +379,10 @@ final class CaptionModel: ObservableObject {
                 cloud.onFailure = { [weak self] message in
                     guard self?.transcriptionID == token else { return }
                     self?.handleFailure(message, run: id)
+                }
+                cloud.onStatus = { [weak self] message in
+                    guard let self, self.runID == id, self.transcriptionID == token, self.isRunning else { return }
+                    self.status = message
                 }
                 try await cloud.start(key: activeKey, language: sourceAPI, keywords: parsedKeywords)
             }
@@ -355,6 +393,8 @@ final class CaptionModel: ObservableObject {
             transcriptionID = token
             cloudTranscriber = pendingCloud
             appleTranscriber = pendingApple
+            cloudTranscriber?.audioTime = elapsed
+            appleTranscriber?.recordingOffset = elapsed
             pendingCloud = nil
             pendingApple = nil
             // Keep the translation stream and capture clock running during a switch.
@@ -396,6 +436,7 @@ final class CaptionModel: ObservableObject {
         await appleTranscriber?.stop(gracefully: gracefully)
         let drained = await (translationDrained, sourceDrained)
         await captureStopped
+        await finishRecording()
         capture = nil
         if gracefully && (drained.0 == false || drained.1 == false) && error == nil {
             error = "Stopped. Some final words may be missing because the connection did not finish draining."
@@ -409,6 +450,7 @@ final class CaptionModel: ObservableObject {
         isSwitching = false
         level = 0
         status = error == nil ? "Stopped" : "Stopped — check the message below"
+        finishCaptionDisplay()
     }
 
     private func handleFailure(_ message: String, run id: UUID) {
@@ -418,26 +460,69 @@ final class CaptionModel: ObservableObject {
         operation = Task { await shutdown(gracefully: false) }
     }
 
+    private func beginRecording() {
+        recordingError = nil
+        recordingURL = nil
+        guard recordCaptions else { return }
+        recording = CaptionRecording()
+        do {
+            let file = try CaptionRecordingFile(directory: Self.recordingDirectory)
+            recordingFile = file
+            recordingURL = file.url
+            recordingTask = Task { [weak self] in
+                while !Task.isCancelled {
+                    do { try await Task.sleep(for: .seconds(2)) }
+                    catch { return }
+                    await self?.saveRecording()
+                }
+            }
+        } catch { recordingError = "Captions could not be recorded. \(error.localizedDescription)" }
+    }
+
+    private func saveRecording() async {
+        guard let recording, let recordingFile else { return }
+        do {
+            try await recordingFile.write(recording, sourceLanguage: sourceLanguage, targetLanguage: targetLanguage)
+            recordingError = nil
+        } catch { recordingError = "Caption recording could not be saved. \(error.localizedDescription)" }
+    }
+
+    private func finishRecording() async {
+        recordingTask?.cancel()
+        await recordingTask?.value
+        recordingTask = nil
+        await saveRecording()
+        recording = nil
+        recordingFile = nil
+    }
+
+    func showRecording() {
+        if let recordingURL { NSWorkspace.shared.activateFileViewerSelecting([recordingURL]) }
+    }
+
     private func safeMessage(_ message: String) -> String {
         let key = activeKey.isEmpty ? apiKey : activeKey
         return key.isEmpty ? message : message.replacingOccurrences(of: key, with: "[redacted]")
     }
 
     private func updateOriginalCaption() {
-        originalCaption = originalFormatter.format(original, language: sourceLanguage)
+        originalCaption = originalFormatter.format(originalForDisplay ?? original, language: sourceLanguage)
     }
 
     private func updateTranslationCaption() {
-        translationCaption = translationFormatter.format(translation, language: targetLanguage)
+        translationCaption = translationFormatter.format(translationForDisplay ?? translation, language: targetLanguage, wrapLongClauses: true)
     }
 
     private func updateOriginal() {
+        originalForDisplay = String(store.displayText.suffix(6500))
         original = String(store.text.suffix(6000))
         lastOriginal = Date()
     }
 
     func clearCaptions() {
         store = TranscriptStore()
+        originalForDisplay = nil
+        translationForDisplay = nil
         original = ""
         translation = ""
         lastOriginal = nil
@@ -447,10 +532,11 @@ final class CaptionModel: ObservableObject {
 
     func preview() {
         guard canConfigure else { return }
+        endPreview()
         clearCaptions()
         isPreview = true
         status = "Preview — no audio capture or API calls"
-        showOverlay?()
+        beginCaptionDisplay()
         previewTask = Task {
             let source = "Ocean waves carry energy into the marginal ice zone. The captions update as the speaker continues."
             let target = "海浪将能量带入边缘冰区。说话继续时，双语字幕也会实时更新。"
@@ -466,14 +552,46 @@ final class CaptionModel: ObservableObject {
                 lastTranslation = Date()
                 try? await Task.sleep(for: .milliseconds(70))
             }
+            endPreview()
         }
     }
 
     func endPreview() {
+        let wasPreview = isPreview
         previewTask?.cancel()
         previewTask = nil
         isPreview = false
         status = "Ready"
+        if wasPreview { finishCaptionDisplay() }
+    }
+
+    var canCloseCaptionWindow: Bool { isOverlayVisible && !isRunning && !stopping && !isPreview }
+
+    func beginCaptionDisplay() {
+        captionDismissTask?.cancel()
+        captionDismissTask = nil
+        isOverlayVisible = true
+        showOverlay?()
+    }
+
+    func finishCaptionDisplay() {
+        captionDismissTask?.cancel()
+        guard isOverlayVisible else { return }
+        let delay = captionDismissDelay
+        captionDismissTask = Task { [weak self] in
+            do { try await Task.sleep(for: delay) }
+            catch { return }
+            guard !Task.isCancelled else { return }
+            self?.closeCaptionWindow()
+        }
+    }
+
+    func closeCaptionWindow() {
+        guard canCloseCaptionWindow else { return }
+        captionDismissTask?.cancel()
+        captionDismissTask = nil
+        isOverlayVisible = false
+        hideOverlay?()
     }
 
     func quit() async {
@@ -482,5 +600,6 @@ final class CaptionModel: ObservableObject {
         operation?.cancel()
         endPreview()
         await shutdown(gracefully: false)
+        closeCaptionWindow()
     }
 }

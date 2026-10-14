@@ -21,9 +21,18 @@ enum PreviewRenderer {
         try save(OverlayView(model: model), size: NSSize(width: 720, height: 240), to: folder.appendingPathComponent("captions-sentences.png"))
         model.mode = .openAI
         try save(ControlsView(model: model), size: NSSize(width: 610, height: 780), to: folder.appendingPathComponent("controls-cloud.png"))
+        model.isPreview = false
+        model.status = "Stopped"
+        model.beginCaptionDisplay()
+        try save(ControlsView(model: model), size: NSSize(width: 610, height: 780), to: folder.appendingPathComponent("controls-stopped.png"))
         model.fontSize = 20
         model.translationFontSize = 30
         try save(OverlayView(model: model), size: NSSize(width: 720, height: 180), to: folder.appendingPathComponent("captions-proportional.png"))
+        model.fontSize = 28
+        model.translationFontSize = 22
+        model.original = "That's the question\nOkay, I've got one final question."
+        model.translation = "不过,我觉得,从根本上说,我希望未来的人看看我们今天所做的事并看到我们站在历史正确的一边,这是一个很好的收尾方式,非常感谢你们加入我们,提出富有思考的问题,也感谢你们有见地的评论,请和我一起感谢这组出色的主讲人。"
+        try save(OverlayView(model: model), size: NSSize(width: 950, height: 340), to: folder.appendingPathComponent("captions-pauses.png"))
     }
 
     private static func save<Content: View>(_ content: Content, size: NSSize, to url: URL) throws {

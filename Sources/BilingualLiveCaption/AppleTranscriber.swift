@@ -11,7 +11,9 @@ final class AppleTranscriber {
     private let inputFormat = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 24000, channels: 1, interleaved: true)!
     private var sampleCount: Int64 = 0
     private var stopped = false
-    var onText: ((String, String, Bool) -> Void)?
+    private var lastFinalEnd: Double?
+    var recordingOffset = 0.0
+    var onText: ((String, String, Bool, String, Double, Double) -> Void)?
     var onFailure: ((String) -> Void)?
 
     static func module(language: String) async throws -> SpeechTranscriber {
@@ -58,7 +60,10 @@ final class AppleTranscriber {
                 for try await result in transcriber.results {
                     guard let self, !self.stopped else { return }
                     let id = "apple-\(result.range.start.value)-\(result.range.start.timescale)"
-                    self.onText?(id, String(result.text.characters), result.isFinal)
+                    let display = Self.displayText(result.text, previousEnd: self.lastFinalEnd)
+                    self.onText?(id, String(result.text.characters), result.isFinal, display,
+                        self.recordingOffset + result.range.start.seconds, self.recordingOffset + result.range.end.seconds)
+                    if result.isFinal { self.lastFinalEnd = result.range.end.seconds }
                 }
             } catch {
                 guard let self, !self.stopped else { return }
@@ -67,6 +72,22 @@ final class AppleTranscriber {
         }
         try await analyzer.prepareToAnalyze(in: format)
         try await analyzer.start(inputSequence: input)
+    }
+
+    static func displayText(_ text: AttributedString, previousEnd: Double?) -> String {
+        var gap = CaptionTimeGap(previousEnd: previousEnd)
+        var display = ""
+        for run in text.runs {
+            let range = run.audioTimeRange
+            let words = String(text[run.range].characters)
+            if range == nil, words.allSatisfy({ $0.isWhitespace }) {
+                display += words
+                continue
+            }
+            if gap.beginsAfterPause(start: range?.start.seconds, end: range?.end.seconds) { display += "\n" }
+            display += words
+        }
+        return display
     }
 
     func enqueue(_ frame: AudioFrame) throws {

@@ -88,9 +88,11 @@ public struct TranscriptStore {
     private struct Item {
         var text: String
         var final: Bool
+        var displayText: String?
     }
     private var order: [String] = []
     private var items: [String: Item] = [:]
+    private var breaks = Set<String>()
     private let limit: Int
 
     public init(limit: Int = 40) { self.limit = limit }
@@ -98,6 +100,18 @@ public struct TranscriptStore {
     public var text: String {
         order.compactMap { items[$0]?.text }.filter { !$0.isEmpty }.joined(separator: " ")
     }
+
+    public var displayText: String {
+        var result = ""
+        for id in order {
+            guard let item = items[id], !item.text.isEmpty else { continue }
+            if !result.isEmpty { result += breaks.contains(id) ? "\n" : " " }
+            result += item.displayText ?? item.text
+        }
+        return result
+    }
+
+    public mutating func breakBefore(_ id: String) { breaks.insert(id) }
 
     public mutating func register(_ id: String, after previous: String? = nil) {
         if !order.contains(id) { order.append(id) }
@@ -117,15 +131,17 @@ public struct TranscriptStore {
         items[id] = item
     }
 
-    public mutating func replace(id: String, text: String, final: Bool) {
+    public mutating func replace(id: String, text: String, final: Bool, displayText: String? = nil) {
         register(id)
         if items[id]?.final == true && !final { return }
-        items[id] = Item(text: text, final: final)
+        items[id] = Item(text: text, final: final, displayText: displayText)
     }
 
     private mutating func trim() {
         while order.count > limit {
-            items.removeValue(forKey: order.removeFirst())
+            let id = order.removeFirst()
+            items.removeValue(forKey: id)
+            breaks.remove(id)
         }
     }
 }

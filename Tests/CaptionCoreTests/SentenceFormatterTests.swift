@@ -1,6 +1,8 @@
 @testable import BilingualLiveCaption
 import CaptionCore
 import Foundation
+import CoreMedia
+import Speech
 import Testing
 
 @MainActor
@@ -77,4 +79,62 @@ import Testing
     #expect(model.translationCaption == "第一句。\n接下来")
     model.clearCaptions()
     #expect(model.originalCaption.isEmpty && model.translationCaption.isEmpty)
+}
+
+@MainActor
+@Test func appleAudioTimesSplitLongPausesAndHandleRevisions() {
+    var first = AttributedString("That's the question ")
+    first.audioTimeRange = CMTimeRange(start: CMTime(seconds: 0, preferredTimescale: 24000), duration: CMTime(seconds: 2, preferredTimescale: 24000))
+    var second = AttributedString("Okay, I've got one final question.")
+    second.audioTimeRange = CMTimeRange(start: CMTime(seconds: 3.2, preferredTimescale: 24000), duration: CMTime(seconds: 2, preferredTimescale: 24000))
+    let formatter = SentenceFormatter()
+    let display = AppleTranscriber.displayText(first + second, previousEnd: nil)
+    #expect(AppleTranscriber.displayText(first + AttributedString(" ") + second, previousEnd: nil).contains("\n"))
+    #expect(formatter.format(display, language: "en") == "That's the question\nOkay, I've got one final question.")
+    #expect(String((first + second).characters) == "That's the question Okay, I've got one final question.")
+    second.audioTimeRange = CMTimeRange(start: CMTime(seconds: 2.4, preferredTimescale: 24000), duration: CMTime(seconds: 2, preferredTimescale: 24000))
+    #expect(!AppleTranscriber.displayText(first + second, previousEnd: nil).contains("\n"))
+    #expect(AppleTranscriber.displayText(second, previousEnd: 1).hasPrefix("\n"))
+}
+
+@MainActor
+@Test func longTranslationsBreakAtExistingCommasWithoutChangingCharacters() {
+    let formatter = SentenceFormatter()
+    let clause = String(repeating: "这是长译文", count: 7)
+    let text = clause + ",谢谢大家加入我们,也感谢你们提出问题。"
+    #expect(formatter.format(text, language: "zh", wrapLongClauses: true) == clause + ",\n谢谢大家加入我们,也感谢你们提出问题。")
+    #expect(!formatter.format(text, language: "zh").contains("\n"))
+    var partial = ""
+    for character in text {
+        partial.append(character)
+        let display = formatter.format(partial, language: "zh", wrapLongClauses: true)
+        #expect(display.filter { !$0.isWhitespace } == partial.filter { !$0.isWhitespace })
+        #expect(!display.hasSuffix("\n") && !display.contains("\n\n"))
+    }
+    let number = clause + "1,234,567"
+    #expect(formatter.format(number, language: "zh", wrapLongClauses: true) == number)
+    #expect(formatter.format("第一段\n第二段\n\n第三段", language: "zh") == "第一段\n第二段\n第三段")
+}
+
+@Test func pauseDetectorUsesAudioDurationAndIgnoresInitialSilence() {
+    var detector = CaptionPauseDetector()
+    let silence = AudioFrame(pcm: Data(repeating: 0, count: 9600), sequence: 0)
+    let speech = AudioFrame(pcm: Data(repeating: 0x10, count: 9600), sequence: 0)
+    let frames = Array(repeating: false, count: 8) + [true] + Array(repeating: false, count: 5) +
+        [true] + Array(repeating: false, count: 6) + [true, true]
+    let boundaries = frames.map { detector.append($0 ? speech : silence) }
+    #expect(boundaries.enumerated().filter { $0.element }.map { $0.offset } == [21])
+}
+
+@Test func displayBreaksSurviveFinalRevisionsWithoutChangingRawTranscripts() {
+    var store = TranscriptStore()
+    store.replace(id: "a", text: "First", final: true)
+    store.breakBefore("b")
+    store.delta(id: "b", text: "Okay")
+    store.replace(id: "b", text: "Okay, next", final: true)
+    #expect(store.text == "First Okay, next")
+    #expect(store.displayText == "First\nOkay, next")
+    store.replace(id: "c", text: "One Two", final: true, displayText: "One\nTwo")
+    #expect(store.text == "First Okay, next One Two")
+    #expect(store.displayText == "First\nOkay, next One\nTwo")
 }

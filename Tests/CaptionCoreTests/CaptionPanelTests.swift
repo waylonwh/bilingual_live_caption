@@ -38,3 +38,58 @@ private final class RecordingCaptionPanel: CaptionPanel {
     panel.performClose(nil)
     #expect(dismissals == 2)
 }
+
+@MainActor
+@Test func captionWindowAppearsForPreviewAndHidesAfterStopping() async throws {
+    let model = CaptionModel(environment: [:], captionDismissDelay: .milliseconds(50))
+    var shows = 0
+    var hides = 0
+    model.showOverlay = { shows += 1 }
+    model.hideOverlay = { hides += 1 }
+    #expect(!model.isOverlayVisible)
+    model.preview()
+    #expect(model.isOverlayVisible && shows == 1)
+    #expect(!model.canCloseCaptionWindow)
+    model.closeCaptionWindow()
+    #expect(model.isOverlayVisible)
+    model.stop()
+    #expect(model.isOverlayVisible && model.canCloseCaptionWindow)
+    model.isBusy = true
+    try await Task.sleep(for: .milliseconds(150))
+    #expect(!model.isOverlayVisible && hides == 1)
+}
+
+@MainActor
+@Test func restartingCaptionsCancelsThePreviousDismissal() async throws {
+    let model = CaptionModel(environment: [:], captionDismissDelay: .milliseconds(50))
+    var hides = 0
+    model.hideOverlay = { hides += 1 }
+    model.beginCaptionDisplay()
+    model.finishCaptionDisplay()
+    model.isRunning = true
+    model.beginCaptionDisplay()
+    model.closeCaptionWindow()
+    try await Task.sleep(for: .milliseconds(150))
+    #expect(model.isOverlayVisible && hides == 0)
+    model.isRunning = false
+    model.finishCaptionDisplay()
+    try await Task.sleep(for: .milliseconds(150))
+    #expect(!model.isOverlayVisible && hides == 1)
+}
+
+@MainActor
+@Test func closingStoppedCaptionsCancelsTheTimerAndAllowsNextStart() async throws {
+    let model = CaptionModel(environment: [:], captionDismissDelay: .milliseconds(50))
+    var hides = 0
+    model.hideOverlay = { hides += 1 }
+    model.beginCaptionDisplay()
+    model.finishCaptionDisplay()
+    model.closeCaptionWindow()
+    #expect(!model.isOverlayVisible && hides == 1)
+    model.isRunning = true
+    model.beginCaptionDisplay()
+    try await Task.sleep(for: .milliseconds(150))
+    #expect(model.isOverlayVisible && hides == 1)
+    model.isRunning = false
+    model.closeCaptionWindow()
+}

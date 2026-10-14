@@ -92,6 +92,21 @@ struct ControlsView: View {
                     Text(message).font(.caption).foregroundStyle(.orange)
                 }
 
+                GroupBox("Caption recording") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Toggle("Automatically save bilingual captions", isOn: $model.recordCaptions)
+                            .disabled(!model.canConfigure)
+                        Text("One TXT file per session in Documents/Bilingual Live Caption. Choose before starting. Timing helps match up to about three sentences per block; correspondence may be approximate.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        if model.recordingURL != nil {
+                            Button("Show Recording in Finder") { model.showRecording() }
+                        }
+                        if let message = model.recordingError {
+                            Text(message).font(.caption).foregroundStyle(.orange).textSelection(.enabled)
+                        }
+                    }.frame(maxWidth: .infinity, alignment: .leading).padding(6)
+                }
+
                 GroupBox("Caption window") {
                     VStack(spacing: 10) {
                         HStack {
@@ -113,15 +128,14 @@ struct ControlsView: View {
                             ColorPicker("Background color", selection: $model.backgroundColor, supportsOpacity: false).labelsHidden()
                         }
                         HStack {
-                            Button(model.isOverlayVisible ? "Hide Caption Window" : "Show Caption Window") {
-                                if model.isOverlayVisible { model.hideOverlay?() }
-                                else { model.showOverlay?() }
+                            if model.canCloseCaptionWindow {
+                                Button("Close Captions") { model.closeCaptionWindow() }
                             }
                             Button("Preview") { model.preview() }.disabled(!model.canConfigure)
                             Spacer()
                             Button("Clear Text") { model.clearCaptions() }.disabled(model.isBusy)
                         }
-                        Text("Drag to move; drag an edge to resize. Click captions, then Esc to hide. Hiding does not stop transcription.")
+                        Text("Captions appear automatically and hide 10 seconds after stopping. After stopping, press Esc in the caption window to close it sooner. Drag to move; drag an edge to resize.")
                             .font(.caption).foregroundStyle(.secondary)
                     }.padding(6)
                 }

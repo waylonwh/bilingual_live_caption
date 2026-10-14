@@ -64,20 +64,18 @@ class CaptionPanel: NSPanel {
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private let model = CaptionModel(preferences: UserPreferences(defaults: .standard), credentials: KeychainCredentials())
     private var window: NSWindow!
     private var overlay: CaptionPanel!
     private var statusItem: NSStatusItem!
-    private var captionMenuItems: [NSMenuItem] = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let menu = NSMenu()
         let appMenu = NSMenu()
         appMenu.addItem(withTitle: "Show Controls", action: #selector(showControls), keyEquivalent: ",")
-        let captionItem = appMenu.addItem(withTitle: "Show Captions", action: #selector(toggleCaptions), keyEquivalent: "l")
+        let captionItem = appMenu.addItem(withTitle: "Close Captions", action: #selector(closeCaptions), keyEquivalent: "")
         captionItem.target = self
-        captionMenuItems.append(captionItem)
         appMenu.addItem(withTitle: "Close Window", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Quit Bilingual Live Caption", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
@@ -108,7 +106,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                           styleMask: [.borderless, .resizable, .nonactivatingPanel], backing: .buffered, defer: false)
         overlay.title = "Live Captions"
         overlay.isReleasedWhenClosed = false
-        overlay.onDismiss = { [weak self] in self?.hideCaptions() }
+        overlay.onDismiss = { [weak self] in self?.model.closeCaptionWindow() }
         overlay.isFloatingPanel = true
         overlay.hidesOnDeactivate = false
         overlay.isMovableByWindowBackground = true
@@ -131,7 +129,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.button?.image = NSImage(systemSymbolName: "captions.bubble", accessibilityDescription: "Bilingual Live Caption")
         let statusMenu = NSMenu()
         statusMenu.addItem(withTitle: "Show Controls", action: #selector(showControls), keyEquivalent: "")
-        captionMenuItems.append(statusMenu.addItem(withTitle: "Show Captions", action: #selector(toggleCaptions), keyEquivalent: ""))
+        statusMenu.addItem(withTitle: "Close Captions", action: #selector(closeCaptions), keyEquivalent: "")
         statusMenu.addItem(withTitle: "Stop Captions", action: #selector(stopCaptions), keyEquivalent: "")
         statusMenu.addItem(.separator())
         statusMenu.addItem(withTitle: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
@@ -139,7 +137,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusMenu.items.last?.target = NSApp
         statusItem.menu = statusMenu
         showControls()
-        if model.isOverlayVisible { showCaptions() }
         if CommandLine.arguments.contains("--preview") { model.preview() }
     }
 
@@ -150,19 +147,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func showCaptions() {
         overlay.orderFrontRegardless()
-        setCaptionVisibility(true)
     }
     @objc private func hideCaptions() {
         overlay.orderOut(nil)
-        setCaptionVisibility(false)
     }
-    @objc private func toggleCaptions() {
-        if model.isOverlayVisible { hideCaptions() }
-        else { showCaptions() }
-    }
-    private func setCaptionVisibility(_ visible: Bool) {
-        model.isOverlayVisible = visible
-        for item in captionMenuItems { item.title = visible ? "Hide Captions" : "Show Captions" }
+    @objc private func closeCaptions() { model.closeCaptionWindow() }
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(closeCaptions) { return model.canCloseCaptionWindow }
+        return true
     }
     @objc private func stopCaptions() { model.stop() }
 
